@@ -122,9 +122,8 @@ async def admin_back(message: Message, state: FSMContext):
 async def upload_start(message: Message, state: FSMContext):
     if message.from_user.id not in ADMIN_IDS:
         return
-    kb = choice_keyboard([("🎧 Audio", "type:audio"), ("📄 PDF", "type:pdf")])
-    await message.answer(blockquote("Turini tanlang"), parse_mode="HTML", reply_markup=kb)
-    await state.set_state(UploadBookState.choose_type)
+    await message.answer(blockquote("Kitob nomini kiriting"), parse_mode="HTML")
+    await state.set_state(UploadBookState.title)
 
 
 @admin_router.callback_query(UploadBookState.choose_type, F.data.startswith("type:"))
@@ -183,8 +182,8 @@ async def receive_parts(message: Message, state: FSMContext):
 async def finish_upload_cb(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id not in ADMIN_IDS:
         return
-    await cb.message.answer(blockquote("Kitob nomini kiriting"), parse_mode="HTML")
-    await state.set_state(UploadBookState.title)
+    await cb.message.answer(blockquote("Muallifni kiriting"), parse_mode="HTML")
+    await state.set_state(UploadBookState.author)
     await cb.answer()
 
 
@@ -194,8 +193,30 @@ async def upload_title(message: Message, state: FSMContext):
         return
     title = message.text.strip()
     await state.update_data(title=title)
-    await message.answer(blockquote("Muallifni kiriting"), parse_mode="HTML")
-    await state.set_state(UploadBookState.author)
+    rows = db.search_books(title, limit=5)
+    if rows:
+        txt = "ℹ️ Bu nomga o‘xshash kitoblar mavjud. Qayta yuklashni davom ettirasizmi?"
+        kb = choice_keyboard([("Davom etish", "dupbook:yes"), ("Nomni qayta kiritish", "dupbook:no")], add_back=True,
+                             back_code="admin_back", back_text="🛡 Admin menyu")
+        await message.answer(blockquote(txt), parse_mode="HTML", reply_markup=kb)
+        # state UploadBookState.title da qoladi
+        return
+    kb = choice_keyboard([("🎧 Audio", "type:audio"), ("📄 PDF", "type:pdf")], add_back=True, back_code="admin_back", back_text="🛡 Admin menyu")
+    await message.answer(blockquote("Turini tanlang"), parse_mode="HTML", reply_markup=kb)
+    await state.set_state(UploadBookState.choose_type)
+
+@admin_router.callback_query(UploadBookState.title, F.data.startswith("dupbook:"))
+async def upload_dupbook_decide(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        return
+    if cb.data.endswith("no"):
+        await cb.message.answer(blockquote("Yangi kitob nomini kiriting"), parse_mode="HTML")
+        await cb.answer()
+        return
+    kb = choice_keyboard([("🎧 Audio", "type:audio"), ("📄 PDF", "type:pdf")], add_back=True, back_code="admin_back", back_text="🛡 Admin menyu")
+    await cb.message.answer(blockquote("Turini tanlang"), parse_mode="HTML", reply_markup=kb)
+    await state.set_state(UploadBookState.choose_type)
+    await cb.answer()
 
 
 @admin_router.message(UploadBookState.author)
