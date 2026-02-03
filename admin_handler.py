@@ -122,10 +122,9 @@ async def admin_back(message: Message, state: FSMContext):
 async def upload_start(message: Message, state: FSMContext):
     if message.from_user.id not in ADMIN_IDS:
         return
-    kb = choice_keyboard([], add_back=True, add_finish=True)
-    await message.answer(blockquote("Fayllarni yuboring. Yakunlash uchun tugmadan foydalaning."), parse_mode="HTML",
-                         reply_markup=kb)
-    await state.set_state(UploadBookState.receiving_parts)
+    kb = choice_keyboard([("🎧 Audio", "type:audio"), ("📄 PDF", "type:pdf")])
+    await message.answer(blockquote("Turini tanlang"), parse_mode="HTML", reply_markup=kb)
+    await state.set_state(UploadBookState.choose_type)
 
 
 @admin_router.callback_query(UploadBookState.choose_type, F.data.startswith("type:"))
@@ -146,23 +145,13 @@ async def receive_parts(message: Message, state: FSMContext):
     if message.from_user.id not in ADMIN_IDS:
         return
     data = await state.get_data()
-    t = None
-    if message.document:
-        t = "pdf"
-    elif message.audio:
-        t = "audio"
-    else:
-        await message.answer("Noto‘g‘ri turdagi fayl")
-        return
-    type_ = data.get("type")
-    if type_ and type_ != t:
-        await message.answer(blockquote(f"Bu kitob uchun {type_} fayllarni yuboring"), parse_mode="HTML")
-        return
-    if not type_:
-        await state.update_data(type=t)
+    type_ = data["type"]
     book_id = data.get("book_id")
+    if not book_id:
+        book_id = db.create_book(data.get("title", ""), data.get("author", ""), None, type_)
+        await state.update_data(book_id=book_id)
     parts = data.get("parts_count", 0) + 1
-    if t == "pdf" and message.document:
+    if message.document and type_ == "pdf":
         file_id = message.document.file_id
         size = message.document.file_size or 0
         if db.file_exists_in_server(file_id):
@@ -170,12 +159,9 @@ async def receive_parts(message: Message, state: FSMContext):
             kb = choice_keyboard([("Yuklash", "dup:yes"), ("Bekor qilish", "dup:no")], add_back=True, back_code="admin_back", back_text="🛡 Admin menyu")
             await message.answer(blockquote("ℹ️ Bu fayl avval yuklangan. Qayta yuklashni xohlaysizmi?"), parse_mode="HTML", reply_markup=kb)
             return
-        if not book_id:
-            book_id = db.create_book(data.get("title", ""), data.get("author", ""), None, t)
-            await state.update_data(book_id=book_id)
         db.add_book_part(book_id, file_id, parts, size=size, duration_seconds=0)
         logging.getLogger("upload").info(f"part={parts} book_id={book_id} type=pdf size={size}")
-    elif t == "audio" and message.audio:
+    elif message.audio and type_ == "audio":
         file_id = message.audio.file_id
         size = message.audio.file_size or 0
         duration = message.audio.duration or 0
@@ -184,11 +170,11 @@ async def receive_parts(message: Message, state: FSMContext):
             kb = choice_keyboard([("Yuklash", "dup:yes"), ("Bekor qilish", "dup:no")], add_back=True, back_code="admin_back", back_text="🛡 Admin menyu")
             await message.answer(blockquote("ℹ️ Bu audio avval yuklangan. Qayta yuklashni xohlaysizmi?"), parse_mode="HTML", reply_markup=kb)
             return
-        if not book_id:
-            book_id = db.create_book(data.get("title", ""), data.get("author", ""), None, t)
-            await state.update_data(book_id=book_id)
         db.add_book_part(book_id, file_id, parts, size=size, duration_seconds=duration)
         logging.getLogger("upload").info(f"part={parts} book_id={book_id} type=audio size={size} dur={duration}")
+    else:
+        await message.answer("Noto‘g‘ri turdagi fayl")
+        return
     await state.update_data(parts_count=parts)
     await message.answer(blockquote(f"Qism {parts} qabul qilindi"), parse_mode="HTML")
 
@@ -208,30 +194,8 @@ async def upload_title(message: Message, state: FSMContext):
         return
     title = message.text.strip()
     await state.update_data(title=title)
-    rows = db.search_books(title, limit=5)
-    if rows:
-        txt = "ℹ️ Bu nomga o‘xshash kitoblar mavjud. Qayta yuklashni davom ettirasizmi?"
-        kb = choice_keyboard([("Davom etish", "dupbook:yes"), ("Nomni qayta kiritish", "dupbook:no")], add_back=True,
-                             back_code="admin_back", back_text="🛡 Admin menyu")
-        await message.answer(blockquote(txt), parse_mode="HTML", reply_markup=kb)
-        # state UploadBookState.title da qoladi
-        return
-    kb = choice_keyboard([("🎧 Audio", "type:audio"), ("📄 PDF", "type:pdf")], add_back=True, back_code="admin_back", back_text="🛡 Admin menyu")
-    await message.answer(blockquote("Turini tanlang"), parse_mode="HTML", reply_markup=kb)
-    await state.set_state(UploadBookState.choose_type)
-
-@admin_router.callback_query(UploadBookState.title, F.data.startswith("dupbook:"))
-async def upload_dupbook_decide(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS:
-        return
-    if cb.data.endswith("no"):
-        await cb.message.answer(blockquote("Yangi kitob nomini kiriting"), parse_mode="HTML")
-        await cb.answer()
-        return
-    kb = choice_keyboard([("🎧 Audio", "type:audio"), ("📄 PDF", "type:pdf")], add_back=True, back_code="admin_back", back_text="🛡 Admin menyu")
-    await cb.message.answer(blockquote("Turini tanlang"), parse_mode="HTML", reply_markup=kb)
-    await state.set_state(UploadBookState.choose_type)
-    await cb.answer()
+    await message.answer(blockquote("Muallifni kiriting"), parse_mode="HTML")
+    await state.set_state(UploadBookState.author)
 
 
 @admin_router.message(UploadBookState.author)
@@ -323,19 +287,16 @@ async def upload_duplicate_decide(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id not in ADMIN_IDS:
         return
     data = await state.get_data()
+    book_id = data.get("book_id")
     pend = data.get("pending_part")
     if not pend or not book_id:
-        pass
+        await cb.answer()
+        return
     if cb.data.endswith("no"):
         await state.update_data(pending_part=None)
         await cb.message.answer("Qayta yuklash bekor qilindi")
         await cb.answer()
         return
-    book_id = data.get("book_id")
-    if not book_id:
-        t = pend["type"]
-        book_id = db.create_book(data.get("title", ""), data.get("author", ""), None, t)
-        await state.update_data(book_id=book_id, type=t)
     parts = pend["parts"]
     if pend["type"] == "pdf":
         db.add_book_part(book_id, pend["file_id"], parts, size=pend["size"], duration_seconds=0)
